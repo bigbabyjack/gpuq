@@ -1,0 +1,11 @@
+[Unit]
+Description=gpuq — single-GPU job scheduler
+After=default.target
+
+[Service]
+ExecStart=%h/.local/bin/gpuq daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
