@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: no-suppressions
+        name: block suppression markers
+        entry: '# (noqa|type: ignore|pyright: ignore|fmt: (skip|off|on))'
+        language: pygrep
+        types: [python]
+      - id: ty
+        name: ty type check
+        entry: uv run ty check
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: vulture
+        name: vulture dead code
+        entry: uv run vulture src tests vulture_whitelist.py
+        language: system
+        pass_filenames: false
+        types: [python]
