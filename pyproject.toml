@@ -3,12 +3,15 @@ name = "gpuq"
 version = "0.1.0"
 description = "GPU job scheduler — queue, run, and de-conflict torch / comfyui / ollama jobs on a single GPU"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "click>=8.1",
+]
 
 [dependency-groups]
 dev = [
   "pre-commit>=3.0",
   "pytest>=8.0",
+  "pytest-asyncio>=0.23",
   "ruff>=0.6",
   "ty",
   "vulture>=2.10",
@@ -28,8 +31,12 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ARG"]
 
+[project.scripts]
+gpuq = "gpuq.cli:main"
+
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
+asyncio_mode = "auto"
 markers = [
   "slow: takes > 30s",
   "integration: hits real external services",
