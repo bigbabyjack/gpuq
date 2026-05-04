@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 
-from gpuq import paths, protocol as p
+from gpuq import paths
+from gpuq import protocol as p
 
 
 async def _acquire(reason: str) -> str:

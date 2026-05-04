@@ -34,7 +34,9 @@ def test_read_all_preserves_stream_and_order(tmp_path):
     j.append("stdout", "c\n")
     j.close()
     assert JobLogs(tmp_path / "j_x").read_all() == [
-        ("stdout", "a\n"), ("stderr", "b\n"), ("stdout", "c\n"),
+        ("stdout", "a\n"),
+        ("stderr", "b\n"),
+        ("stdout", "c\n"),
     ]
 
 

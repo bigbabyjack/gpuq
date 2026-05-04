@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from gpuq import paths, protocol as p
+from gpuq import paths
+from gpuq import protocol as p
 from gpuq.daemon.queue import Queue
 from gpuq.daemon.runner import Runner
 from gpuq.ids import new_job_id, new_lease_id
@@ -20,7 +22,7 @@ log = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Bus:
@@ -77,10 +79,8 @@ class Server:
         self.queue.notify.set()
         if self._scheduler_task:
             self._scheduler_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._scheduler_task
-            except (asyncio.CancelledError, Exception):
-                pass
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -91,9 +91,7 @@ class Server:
 
     def _reconcile_on_startup(self) -> None:
         for j in self.store.jobs.running():
-            self.store.jobs.update_state(
-                j.id, state="failed", exit_code=-1, finished_at=_now()
-            )
+            self.store.jobs.update_state(j.id, state="failed", exit_code=-1, finished_at=_now())
 
     async def _scheduler(self) -> None:
         while not self._stopping.is_set():
@@ -125,18 +123,31 @@ class Server:
 
         async def mirror():
             async for stream, line in job_logs.follow():
-                self.bus.publish(job.id, p.LogEvent(
-                    id=job.id, stream=stream, line=line,
-                ))
+                self.bus.publish(
+                    job.id,
+                    p.LogEvent(
+                        id=job.id,
+                        stream=stream,
+                        line=line,
+                    ),
+                )
 
         mirror_task = asyncio.create_task(mirror())
         try:
             self.store.jobs.update_state(job.id, state="running", started_at=_now())
-            self.bus.publish(job.id, p.StateEvent(
-                id=job.id, state="running", started_at=_now(),
-            ))
+            self.bus.publish(
+                job.id,
+                p.StateEvent(
+                    id=job.id,
+                    state="running",
+                    started_at=_now(),
+                ),
+            )
             rc, dur = await runner.run(
-                cmd=job.cmd, cwd=job.cwd, env=job.env, logs=job_logs,
+                cmd=job.cmd,
+                cwd=job.cwd,
+                env=job.env,
+                logs=job_logs,
             )
         finally:
             job_logs.eof()
@@ -147,11 +158,20 @@ class Server:
 
         final_state = "done" if rc == 0 else "failed"
         self.store.jobs.update_state(
-            job.id, state=final_state, exit_code=rc, finished_at=_now(),
+            job.id,
+            state=final_state,
+            exit_code=rc,
+            finished_at=_now(),
         )
-        self.bus.publish(job.id, p.StateEvent(
-            id=job.id, state=final_state, exit_code=rc, duration_s=dur,
-        ))
+        self.bus.publish(
+            job.id,
+            p.StateEvent(
+                id=job.id,
+                state=final_state,
+                exit_code=rc,
+                duration_s=dur,
+            ),
+        )
         self.bus.close(job.id)
 
         if self.store.jobs.next_queued() is None and not self._lease_held.is_set():
@@ -159,8 +179,7 @@ class Server:
 
     # -- connection handler ---------------------------------------------------
 
-    async def _handle(self, reader: asyncio.StreamReader,
-                      writer: asyncio.StreamWriter) -> None:
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await reader.readline()
             if not line:
@@ -175,20 +194,14 @@ class Server:
             pass
         except Exception as e:
             log.exception("handler error")
-            try:
+            with contextlib.suppress(Exception):
                 _send(writer, p.ErrorEvent(message=f"server error: {e}"))
-            except Exception:
-                pass
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await writer.drain()
-            except Exception:
-                pass
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            except Exception:
-                pass
 
     async def _dispatch(self, req: p.Request, writer: asyncio.StreamWriter) -> None:
         if isinstance(req, p.Submit):
@@ -207,9 +220,15 @@ class Server:
             await self._handle_release(req, writer)
         elif isinstance(req, p.EvictOllama):
             evicted = await self.ollama.evict()
-            _send(writer, p.ResultEvent(payload={
-                "evicted": bool(evicted), "was_loaded": evicted,
-            }))
+            _send(
+                writer,
+                p.ResultEvent(
+                    payload={
+                        "evicted": bool(evicted),
+                        "was_loaded": evicted,
+                    }
+                ),
+            )
         elif isinstance(req, p.RestoreOllama):
             await self.ollama.restore()
             _send(writer, p.ResultEvent(payload={"ok": True}))
@@ -217,10 +236,18 @@ class Server:
     async def _handle_submit(self, req: p.Submit, writer: asyncio.StreamWriter) -> None:
         jid = new_job_id()
         rec = JobRecord(
-            id=jid, cmd=req.cmd, cwd=req.cwd, env=req.env, tag=req.tag,
-            priority=req.priority, state="queued",
-            pid=None, exit_code=None,
-            submitted_at=_now(), started_at=None, finished_at=None,
+            id=jid,
+            cmd=req.cmd,
+            cwd=req.cwd,
+            env=req.env,
+            tag=req.tag,
+            priority=req.priority,
+            state="queued",
+            pid=None,
+            exit_code=None,
+            submitted_at=_now(),
+            started_at=None,
+            finished_at=None,
         )
         sub = self.bus.subscribe(jid)
         self.queue.enqueue(rec)
@@ -232,8 +259,9 @@ class Server:
             return
         await self._stream_until_terminal(jid, sub, writer)
 
-    async def _stream_until_terminal(self, jid: str, sub: asyncio.Queue,
-                                      writer: asyncio.StreamWriter) -> None:
+    async def _stream_until_terminal(
+        self, jid: str, sub: asyncio.Queue, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             while True:
                 ev = await sub.get()
@@ -241,9 +269,7 @@ class Server:
                     return
                 _send(writer, ev)
                 await writer.drain()
-                if isinstance(ev, p.StateEvent) and ev.state in (
-                    "done", "failed", "cancelled"
-                ):
+                if isinstance(ev, p.StateEvent) and ev.state in ("done", "failed", "cancelled"):
                     return
         finally:
             self.bus.unsubscribe(jid, sub)
@@ -263,10 +289,15 @@ class Server:
             self.bus.unsubscribe(req.id, sub)
 
     async def _handle_ps(self, req: p.Ps, writer: asyncio.StreamWriter) -> None:
-        jobs = self.store.jobs.list(state=req.state, tag=req.tag)
-        _send(writer, p.ResultEvent(payload={
-            "jobs": [_job_dict(j) for j in jobs],
-        }))
+        jobs = self.store.jobs.find(state=req.state, tag=req.tag)
+        _send(
+            writer,
+            p.ResultEvent(
+                payload={
+                    "jobs": [_job_dict(j) for j in jobs],
+                }
+            ),
+        )
 
     async def _handle_show(self, req: p.Show, writer: asyncio.StreamWriter) -> None:
         rec = self.store.jobs.get(req.id)
@@ -281,9 +312,15 @@ class Server:
             self.queue.cancel(req.id)
             self.bus.publish(req.id, p.StateEvent(id=req.id, state="cancelled"))
             self.bus.close(req.id)
-            _send(writer, p.ResultEvent(payload={
-                "ok": True, "job": _job_dict(self.store.jobs.get(req.id)),
-            }))
+            _send(
+                writer,
+                p.ResultEvent(
+                    payload={
+                        "ok": True,
+                        "job": _job_dict(self.store.jobs.get(req.id)),
+                    }
+                ),
+            )
             return
         if rec.state in ("running", "starting") and self._current_job_id == req.id:
             assert self._current_runner is not None
@@ -298,15 +335,27 @@ class Server:
         await self.ollama.evict()
         lid = new_lease_id()
         granted = _now()
-        self.store.leases.insert(LeaseRecord(
-            id=lid, reason=req.reason or None,
-            granted_at=granted, expires_at=None, released_at=None,
-        ))
+        self.store.leases.insert(
+            LeaseRecord(
+                id=lid,
+                reason=req.reason or None,
+                granted_at=granted,
+                expires_at=None,
+                released_at=None,
+            )
+        )
         self._lease_held.set()
         self._lease_id = lid
-        _send(writer, p.ResultEvent(payload={
-            "lease_id": lid, "granted_at": granted, "expires_at": None,
-        }))
+        _send(
+            writer,
+            p.ResultEvent(
+                payload={
+                    "lease_id": lid,
+                    "granted_at": granted,
+                    "expires_at": None,
+                }
+            ),
+        )
 
     async def _handle_release(self, req: p.Release, writer: asyncio.StreamWriter) -> None:
         if self._lease_id == req.lease_id:
@@ -323,10 +372,17 @@ def _job_dict(j: JobRecord | None) -> dict[str, Any] | None:
     if j is None:
         return None
     return {
-        "id": j.id, "cmd": j.cmd, "cwd": j.cwd, "tag": j.tag,
-        "priority": j.priority, "state": j.state, "pid": j.pid,
-        "exit_code": j.exit_code, "submitted_at": j.submitted_at,
-        "started_at": j.started_at, "finished_at": j.finished_at,
+        "id": j.id,
+        "cmd": j.cmd,
+        "cwd": j.cwd,
+        "tag": j.tag,
+        "priority": j.priority,
+        "state": j.state,
+        "pid": j.pid,
+        "exit_code": j.exit_code,
+        "submitted_at": j.submitted_at,
+        "started_at": j.started_at,
+        "finished_at": j.finished_at,
     }
 
 

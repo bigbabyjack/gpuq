@@ -9,7 +9,8 @@ import sys
 
 import click
 
-from gpuq import paths, protocol as p
+from gpuq import paths
+from gpuq import protocol as p
 
 
 def _run(coro):
@@ -52,8 +53,12 @@ def submit(tag: str, priority: int, detach: bool, cmd: tuple[str, ...]) -> None:
 
     async def run():
         req = p.Submit(
-            cmd=list(cmd), cwd=os.getcwd(), env=dict(os.environ),
-            tag=tag, priority=priority, detach=detach,
+            cmd=list(cmd),
+            cwd=os.getcwd(),
+            env=dict(os.environ),
+            tag=tag,
+            priority=priority,
+            detach=detach,
         )
         reader, writer = await _send(req)
         exit_code = 0
@@ -100,8 +105,10 @@ def ps(tag: str | None, state: str | None, as_json: bool) -> None:
             click.echo(json.dumps(payload))
         else:
             for j in payload.get("jobs", []):
-                click.echo(f"{j['id']}  {j['state']:9}  p={j['priority']}  "
-                           f"{j.get('tag', '')}  {' '.join(j['cmd'])}")
+                click.echo(
+                    f"{j['id']}  {j['state']:9}  p={j['priority']}  "
+                    f"{j.get('tag', '')}  {' '.join(j['cmd'])}"
+                )
 
     _run(run())
 
@@ -150,9 +157,12 @@ def cancel(id: str, kill: bool) -> None:
     """Cancel a job."""
 
     async def run():
-        reader, writer = await _send(p.Cancel(
-            id=id, signal="KILL" if kill else "TERM",
-        ))
+        reader, writer = await _send(
+            p.Cancel(
+                id=id,
+                signal="KILL" if kill else "TERM",
+            )
+        )
         ev = await _recv_one(reader)
         writer.close()
         if isinstance(ev, p.ResultEvent) and ev.payload.get("ok"):

@@ -70,9 +70,7 @@ class RestoreOllama:
     pass
 
 
-Request = (
-    Submit | Attach | Ps | Show | Cancel | Lease | Release | EvictOllama | RestoreOllama
-)
+Request = Submit | Attach | Ps | Show | Cancel | Lease | Release | EvictOllama | RestoreOllama
 
 _REQ_BY_OP: dict[str, type] = {
     "submit": Submit,

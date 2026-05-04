@@ -14,10 +14,18 @@ def store(tmp_path):
 
 def _job(id_: str, prio: int = 0, t: int = 0) -> JobRecord:
     return JobRecord(
-        id=id_, cmd=["x"], cwd="/", env={}, tag="", priority=prio,
-        state="queued", pid=None, exit_code=None,
+        id=id_,
+        cmd=["x"],
+        cwd="/",
+        env={},
+        tag="",
+        priority=prio,
+        state="queued",
+        pid=None,
+        exit_code=None,
         submitted_at=f"2026-01-01T00:00:{t:02d}",
-        started_at=None, finished_at=None,
+        started_at=None,
+        finished_at=None,
     )
 
 
@@ -25,10 +33,14 @@ def test_enqueue_and_pop_priority(store):
     q = Queue(store)
     q.enqueue(_job("j_a", prio=0, t=0))
     q.enqueue(_job("j_b", prio=5, t=1))
-    assert q.pop().id == "j_b"
+    first = q.pop()
+    assert first is not None
+    assert first.id == "j_b"
     # Mark first one done so next_queued moves on (queue.pop sets to "starting")
     store.jobs.update_state("j_b", state="done")
-    assert q.pop().id == "j_a"
+    second = q.pop()
+    assert second is not None
+    assert second.id == "j_a"
     store.jobs.update_state("j_a", state="done")
     assert q.pop() is None
 

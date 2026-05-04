@@ -4,12 +4,14 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from gpuq import paths, protocol as p
+from gpuq import paths
+from gpuq import protocol as p
 from gpuq.cli import main
 
 
 @pytest.mark.asyncio
-async def test_submit_streams_output_and_propagates_exit(daemon):
+@pytest.mark.usefixtures("daemon")
+async def test_submit_streams_output_and_propagates_exit():
     runner = CliRunner()
 
     def invoke():
@@ -25,7 +27,8 @@ async def test_submit_streams_output_and_propagates_exit(daemon):
 
 
 @pytest.mark.asyncio
-async def test_ps_json(daemon):
+@pytest.mark.usefixtures("daemon")
+async def test_ps_json():
     # Submit a job through the socket directly so we don't need to wait.
     r, w = await asyncio.open_unix_connection(str(paths.socket_path()))
     w.write(p.encode_request(p.Submit(cmd=["true"], cwd="/tmp", env={})).encode())

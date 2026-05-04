@@ -6,8 +6,9 @@ from gpuq import protocol as p
 
 
 def test_submit_request_roundtrip():
-    req = p.Submit(cmd=["python", "x.py"], cwd="/tmp", env={"A": "1"},
-                   tag="train", priority=5, detach=False)
+    req = p.Submit(
+        cmd=["python", "x.py"], cwd="/tmp", env={"A": "1"}, tag="train", priority=5, detach=False
+    )
     line = p.encode_request(req)
     assert json.loads(line)["op"] == "submit"
     assert p.decode_request(line) == req

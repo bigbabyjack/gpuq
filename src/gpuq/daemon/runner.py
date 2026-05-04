@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import time
@@ -15,13 +16,16 @@ class Runner:
     def __init__(self) -> None:
         self._proc: asyncio.subprocess.Process | None = None
 
-    async def run(self, *, cmd: list[str], cwd: str, env: Mapping[str, str],
-                  logs: JobLogs) -> tuple[int, float]:
+    async def run(
+        self, *, cmd: list[str], cwd: str, env: Mapping[str, str], logs: JobLogs
+    ) -> tuple[int, float]:
         full_env = {**os.environ, **env}
         full_env.setdefault("CUDA_VISIBLE_DEVICES", "0")
         t0 = time.monotonic()
         self._proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd, env=full_env,
+            *cmd,
+            cwd=cwd,
+            env=full_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -49,7 +53,5 @@ class Runner:
         if self._proc is None or self._proc.returncode is not None:
             return
         s = signal.SIGTERM if sig == "TERM" else signal.SIGKILL
-        try:
+        with contextlib.suppress(ProcessLookupError):
             self._proc.send_signal(s)
-        except ProcessLookupError:
-            pass

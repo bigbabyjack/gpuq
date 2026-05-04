@@ -26,7 +26,8 @@ class OllamaController:
     async def _loaded_models(self) -> list[str]:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ollama", "ps",
+                "ollama",
+                "ps",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -42,7 +43,9 @@ class OllamaController:
     async def _stop(self, model: str) -> None:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ollama", "stop", model,
+                "ollama",
+                "stop",
+                model,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )

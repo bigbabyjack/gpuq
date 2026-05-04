@@ -3,7 +3,8 @@ import asyncio
 import pytest
 
 import gpuq
-from gpuq import paths, protocol as p
+from gpuq import paths
+from gpuq import protocol as p
 
 
 @pytest.mark.asyncio
@@ -25,7 +26,8 @@ async def test_lease_acquires_and_releases(daemon):
 
 
 @pytest.mark.asyncio
-async def test_lease_blocks_queued_jobs(daemon):
+@pytest.mark.usefixtures("daemon")
+async def test_lease_blocks_queued_jobs():
     """While the lease is held, a queued submit must not start running."""
     loop = asyncio.get_running_loop()
     progress: dict[str, bool] = {"job_started": False, "lease_released": False}
@@ -34,6 +36,7 @@ async def test_lease_blocks_queued_jobs(daemon):
         with gpuq.lease(reason="blocker"):
             # Sleep long enough for a queued job to attempt to start.
             import time
+
             time.sleep(0.3)
         progress["lease_released"] = True
 
@@ -42,9 +45,15 @@ async def test_lease_blocks_queued_jobs(daemon):
 
     # Now submit a job; it should remain queued until the lease releases.
     r, w = await asyncio.open_unix_connection(str(paths.socket_path()))
-    w.write(p.encode_request(p.Submit(
-        cmd=["bash", "-c", "echo done"], cwd="/tmp", env={},
-    )).encode())
+    w.write(
+        p.encode_request(
+            p.Submit(
+                cmd=["bash", "-c", "echo done"],
+                cwd="/tmp",
+                env={},
+            )
+        ).encode()
+    )
     await w.drain()
 
     states: list[str] = []
@@ -62,6 +71,6 @@ async def test_lease_blocks_queued_jobs(daemon):
 
     assert "queued" in states
     assert states[-1] == "done"
-    assert progress["job_started"] is False, (
-        "job started while lease was held — scheduler did not respect lease"
-    )
+    assert (
+        progress["job_started"] is False
+    ), "job started while lease was held — scheduler did not respect lease"

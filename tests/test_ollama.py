@@ -25,7 +25,7 @@ async def test_evict_calls_stop_for_each_loaded_model():
     )
     calls: list[list[str]] = []
 
-    async def fake_exec(*cmd, **kwargs):
+    async def fake_exec(*cmd, **_kwargs):
         calls.append(list(cmd))
         if cmd[1] == "ps":
             return _proc(stdout=ps_out)
@@ -41,7 +41,7 @@ async def test_evict_calls_stop_for_each_loaded_model():
 
 @pytest.mark.asyncio
 async def test_evict_noop_when_ollama_missing():
-    async def fake_exec(*cmd, **kwargs):
+    async def fake_exec(*_cmd, **_kwargs):
         raise FileNotFoundError
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -51,7 +51,7 @@ async def test_evict_noop_when_ollama_missing():
 
 @pytest.mark.asyncio
 async def test_evict_noop_when_ps_fails():
-    async def fake_exec(*cmd, **kwargs):
+    async def fake_exec(*_cmd, **_kwargs):
         return _proc(returncode=1)
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):

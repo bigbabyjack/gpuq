@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from gpuq.state import JobRecord, Store
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Queue:
@@ -30,7 +30,7 @@ class Queue:
         return nxt
 
     def position(self, jid: str) -> int | None:
-        for i, j in enumerate(self.store.jobs.list(state="queued"), start=1):
+        for i, j in enumerate(self.store.jobs.find(state="queued"), start=1):
             if j.id == jid:
                 return i
         return None

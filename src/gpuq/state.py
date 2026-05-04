@@ -64,18 +64,28 @@ class LeaseRecord:
 
 def _row_to_job(r: sqlite3.Row) -> JobRecord:
     return JobRecord(
-        id=r["id"], cmd=json.loads(r["cmd"]), cwd=r["cwd"],
-        env=json.loads(r["env"]), tag=r["tag"], priority=r["priority"],
-        state=r["state"], pid=r["pid"], exit_code=r["exit_code"],
-        submitted_at=r["submitted_at"], started_at=r["started_at"],
+        id=r["id"],
+        cmd=json.loads(r["cmd"]),
+        cwd=r["cwd"],
+        env=json.loads(r["env"]),
+        tag=r["tag"],
+        priority=r["priority"],
+        state=r["state"],
+        pid=r["pid"],
+        exit_code=r["exit_code"],
+        submitted_at=r["submitted_at"],
+        started_at=r["started_at"],
         finished_at=r["finished_at"],
     )
 
 
 def _row_to_lease(r: sqlite3.Row) -> LeaseRecord:
     return LeaseRecord(
-        id=r["id"], reason=r["reason"], granted_at=r["granted_at"],
-        expires_at=r["expires_at"], released_at=r["released_at"],
+        id=r["id"],
+        reason=r["reason"],
+        granted_at=r["granted_at"],
+        expires_at=r["expires_at"],
+        released_at=r["released_at"],
     )
 
 
@@ -88,16 +98,27 @@ class JobRepo:
             "INSERT INTO jobs(id,cmd,cwd,env,tag,priority,state,pid,exit_code,"
             "submitted_at,started_at,finished_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (j.id, json.dumps(j.cmd), j.cwd, json.dumps(j.env), j.tag,
-             j.priority, j.state, j.pid, j.exit_code,
-             j.submitted_at, j.started_at, j.finished_at),
+            (
+                j.id,
+                json.dumps(j.cmd),
+                j.cwd,
+                json.dumps(j.env),
+                j.tag,
+                j.priority,
+                j.state,
+                j.pid,
+                j.exit_code,
+                j.submitted_at,
+                j.started_at,
+                j.finished_at,
+            ),
         )
 
     def get(self, jid: str) -> JobRecord | None:
         r = self._c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return _row_to_job(r) if r else None
 
-    def list(self, *, state: str | None = None, tag: str | None = None) -> list[JobRecord]:
+    def find(self, *, state: str | None = None, tag: str | None = None) -> list[JobRecord]:
         sql = "SELECT * FROM jobs WHERE 1=1"
         args: list = []
         if state:
@@ -144,8 +165,10 @@ class JobRepo:
         return _row_to_job(r) if r else None
 
     def running(self) -> list[JobRecord]:
-        return [_row_to_job(r) for r in self._c.execute(
-            "SELECT * FROM jobs WHERE state IN ('starting','running')")]
+        return [
+            _row_to_job(r)
+            for r in self._c.execute("SELECT * FROM jobs WHERE state IN ('starting','running')")
+        ]
 
 
 class LeaseRepo:
@@ -154,8 +177,7 @@ class LeaseRepo:
 
     def insert(self, lr: LeaseRecord) -> None:
         self._c.execute(
-            "INSERT INTO leases(id,reason,granted_at,expires_at,released_at) "
-            "VALUES(?,?,?,?,?)",
+            "INSERT INTO leases(id,reason,granted_at,expires_at,released_at) " "VALUES(?,?,?,?,?)",
             (lr.id, lr.reason, lr.granted_at, lr.expires_at, lr.released_at),
         )
 
@@ -178,8 +200,7 @@ class Store:
         self.db.parent.mkdir(parents=True, exist_ok=True)
         # isolation_level=None enables autocommit; required for our update_state
         # writes to be visible immediately to the test reader.
-        self._conn = sqlite3.connect(self.db, isolation_level=None,
-                                     check_same_thread=False)
+        self._conn = sqlite3.connect(self.db, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self.jobs = JobRepo(self._conn)
