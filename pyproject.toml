@@ -3,6 +3,8 @@ name = "gpuq"
 version = "0.1.0"
 description = "GPU job scheduler — queue, run, and de-conflict torch / comfyui / ollama jobs on a single GPU"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "click>=8.1",
 ]
