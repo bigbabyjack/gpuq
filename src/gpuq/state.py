@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     exit_code INTEGER,
     submitted_at TEXT NOT NULL,
     started_at TEXT,
-    finished_at TEXT
+    finished_at TEXT,
+    parent_id TEXT REFERENCES jobs(id),
+    description TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_priority
     ON jobs(state, priority DESC, submitted_at);
@@ -35,6 +37,11 @@ CREATE TABLE IF NOT EXISTS leases (
     released_at TEXT
 );
 """
+
+_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("parent_id", "ALTER TABLE jobs ADD COLUMN parent_id TEXT REFERENCES jobs(id)"),
+    ("description", "ALTER TABLE jobs ADD COLUMN description TEXT"),
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,8 @@ class JobRecord:
     submitted_at: str
     started_at: str | None
     finished_at: str | None
+    parent_id: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +72,7 @@ class LeaseRecord:
 
 
 def _row_to_job(r: sqlite3.Row) -> JobRecord:
+    keys = r.keys()
     return JobRecord(
         id=r["id"],
         cmd=json.loads(r["cmd"]),
@@ -76,6 +86,8 @@ def _row_to_job(r: sqlite3.Row) -> JobRecord:
         submitted_at=r["submitted_at"],
         started_at=r["started_at"],
         finished_at=r["finished_at"],
+        parent_id=r["parent_id"] if "parent_id" in keys else None,
+        description=r["description"] if "description" in keys else None,
     )
 
 
@@ -96,8 +108,8 @@ class JobRepo:
     def insert(self, j: JobRecord) -> None:
         self._c.execute(
             "INSERT INTO jobs(id,cmd,cwd,env,tag,priority,state,pid,exit_code,"
-            "submitted_at,started_at,finished_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "submitted_at,started_at,finished_at,parent_id,description) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 j.id,
                 json.dumps(j.cmd),
@@ -111,22 +123,42 @@ class JobRepo:
                 j.submitted_at,
                 j.started_at,
                 j.finished_at,
+                j.parent_id,
+                j.description,
             ),
         )
+
+    def delete(self, jid: str) -> bool:
+        cur = self._c.execute("DELETE FROM jobs WHERE id=?", (jid,))
+        return cur.rowcount > 0
 
     def get(self, jid: str) -> JobRecord | None:
         r = self._c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return _row_to_job(r) if r else None
 
-    def find(self, *, state: str | None = None, tag: str | None = None) -> list[JobRecord]:
+    def find(
+        self,
+        *,
+        state: str | None = None,
+        states: list[str] | None = None,
+        tag: str | None = None,
+        since: str | None = None,
+    ) -> list[JobRecord]:
         sql = "SELECT * FROM jobs WHERE 1=1"
         args: list = []
         if state:
             sql += " AND state=?"
             args.append(state)
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            sql += f" AND state IN ({placeholders})"
+            args.extend(states)
         if tag:
             sql += " AND tag=?"
             args.append(tag)
+        if since:
+            sql += " AND submitted_at >= ?"
+            args.append(since)
         sql += " ORDER BY priority DESC, submitted_at ASC"
         return [_row_to_job(r) for r in self._c.execute(sql, args)]
 
@@ -221,6 +253,10 @@ class Store:
         self._conn = sqlite3.connect(self.db, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for col, ddl in _MIGRATIONS:
+            if col not in existing:
+                self._conn.execute(ddl)
         self.jobs = JobRepo(self._conn)
         self.leases = LeaseRepo(self._conn)
 

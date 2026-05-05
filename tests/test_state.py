@@ -141,6 +141,58 @@ def test_bump_missing_returns_false(store):
     assert store.jobs.bump("j_nope") is False
 
 
+def test_parent_id_and_description_round_trip(store):
+    rec = JobRecord(
+        id="j_child",
+        cmd=["x"],
+        cwd="/",
+        env={},
+        tag="",
+        priority=0,
+        state="queued",
+        pid=None,
+        exit_code=None,
+        submitted_at=_now(),
+        started_at=None,
+        finished_at=None,
+        parent_id="j_parent",
+        description="run a thing",
+    )
+    store.jobs.insert(rec)
+    got = store.jobs.get("j_child")
+    assert got.parent_id == "j_parent"
+    assert got.description == "run a thing"
+
+
+def test_find_supports_states_list_and_since(store):
+    store.jobs.insert(_job("j_a", state="queued", t=1))
+    store.jobs.insert(_job("j_b", state="failed", t=2))
+    store.jobs.insert(_job("j_c", state="done", t=3))
+    ids = {j.id for j in store.jobs.find(states=["queued", "failed"])}
+    assert ids == {"j_a", "j_b"}
+    ids = {j.id for j in store.jobs.find(since="2026-01-01T00:00:02")}
+    assert ids == {"j_b", "j_c"}
+
+
+def test_delete_job_removes_row(store):
+    store.jobs.insert(_job("j_a"))
+    assert store.jobs.delete("j_a") is True
+    assert store.jobs.get("j_a") is None
+    assert store.jobs.delete("j_a") is False
+
+
+def test_migration_idempotent_on_existing_db(tmp_path):
+    db = tmp_path / "state.db"
+    s1 = Store(db)
+    s1.init()
+    s1.close()
+    s2 = Store(db)
+    s2.init()
+    cols = {row["name"] for row in s2._conn.execute("PRAGMA table_info(jobs)")}
+    assert "parent_id" in cols and "description" in cols
+    s2.close()
+
+
 def test_running_lists_starting_and_running(store):
     store.jobs.insert(_job("j_q", state="queued"))
     store.jobs.insert(_job("j_s", state="starting"))
