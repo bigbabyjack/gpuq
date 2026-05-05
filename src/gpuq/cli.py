@@ -17,6 +17,26 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _parse_duration(s: str) -> float:
+    """Parse '1d', '6h', '30m', '45s', or raw seconds → seconds."""
+    s = s.strip()
+    if not s:
+        raise click.UsageError("empty duration")
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if s[-1] in units:
+        try:
+            return float(s[:-1]) * units[s[-1]]
+        except ValueError as e:
+            raise click.UsageError(f"bad duration: {s!r}") from e
+    return float(s)
+
+
+def _since_to_iso(s: str) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(seconds=_parse_duration(s))).isoformat()
+
+
 async def _open():
     sock = paths.socket_path()
     if not sock.exists():
@@ -95,13 +115,42 @@ def submit(tag: str, priority: int, next_: bool, detach: bool, cmd: tuple[str, .
 
 @main.command()
 @click.option("--tag", default=None)
-@click.option("--state", default=None)
+@click.option("--state", default=None, help="Single state filter (back-compat).")
+@click.option(
+    "--states",
+    "states_csv",
+    default=None,
+    help="Comma-separated states (e.g. running,queued,failed).",
+)
+@click.option("-a", "--all", "all_", is_flag=True, help="Include terminal jobs.")
+@click.option(
+    "--since",
+    default=None,
+    help="Only jobs submitted since this duration (e.g. 1d, 6h, 30m).",
+)
 @click.option("--json", "as_json", is_flag=True)
-def ps(tag: str | None, state: str | None, as_json: bool) -> None:
-    """List jobs."""
+def ps(
+    tag: str | None,
+    state: str | None,
+    states_csv: str | None,
+    all_: bool,
+    since: str | None,
+    as_json: bool,
+) -> None:
+    """List jobs. By default shows queued + running; --all for history."""
 
     async def run():
-        reader, writer = await _send(p.Ps(tag=tag, state=state))
+        states: list[str] = []
+        if states_csv:
+            states = [s.strip() for s in states_csv.split(",") if s.strip()]
+        elif state:
+            pass  # use single-state field
+        elif not all_:
+            states = ["queued", "starting", "running"]
+        since_iso = _since_to_iso(since) if since else None
+        reader, writer = await _send(
+            p.Ps(tag=tag, state=state, states=states, since=since_iso)
+        )
         ev = await _recv_one(reader)
         writer.close()
         payload = ev.payload if isinstance(ev, p.ResultEvent) else {"jobs": []}
@@ -137,11 +186,32 @@ def show(id: str, as_json: bool) -> None:
 @click.argument("id")
 @click.option("-f", "--follow", is_flag=True)
 @click.option("--from", "from_", type=click.Choice(["start", "tail"]), default="tail")
-def logs(id: str, follow: bool, from_: str) -> None:
+@click.option("-n", "--tail", "tail", type=int, default=200, help="Last N lines (default 200).")
+def logs(id: str, follow: bool, from_: str, tail: int) -> None:
     """Stream job logs."""
 
     async def run():
-        reader, writer = await _send(p.Attach(id=id, follow=follow, from_=from_))
+        # Probe for empty-output state up front, so we can emit a placeholder.
+        log_path = paths.log_dir(id)
+        combined = log_path / "combined.log"
+        empty = (not combined.exists()) or combined.stat().st_size == 0
+        if empty:
+            show_reader, show_writer = await _send(p.Show(id=id))
+            ev = await _recv_one(show_reader)
+            show_writer.close()
+            job = (
+                ev.payload.get("job")
+                if isinstance(ev, p.ResultEvent) and ev.payload.get("job")
+                else None
+            )
+            state = job["state"] if job else "unknown"
+            started = job.get("started_at") if job else None
+            click.echo(
+                f"[gpuq] no output yet for {id} (state={state}, started={started})",
+                err=True,
+            )
+
+        reader, writer = await _send(p.Attach(id=id, follow=follow, from_=from_, tail=tail))
         try:
             while (ev := await _recv_one(reader)) is not None:
                 if isinstance(ev, p.LogEvent):

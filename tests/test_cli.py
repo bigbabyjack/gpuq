@@ -41,7 +41,7 @@ async def test_ps_json():
     runner = CliRunner()
     result = await asyncio.get_running_loop().run_in_executor(
         None,
-        lambda: runner.invoke(main, ["ps", "--json"], catch_exceptions=False),
+        lambda: runner.invoke(main, ["ps", "--all", "--json"], catch_exceptions=False),
     )
     assert result.exit_code == 0
     parsed = json.loads(result.output)
@@ -101,6 +101,35 @@ async def test_bump_unknown_job_exits_nonzero():
         lambda: runner.invoke(main, ["bump", "j_nope"], catch_exceptions=False),
     )
     assert result.exit_code == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("daemon")
+async def test_ps_default_excludes_terminal():
+    # Run a job to completion.
+    r, w = await asyncio.open_unix_connection(str(paths.socket_path()))
+    w.write(p.encode_request(p.Submit(cmd=["true"], cwd="/tmp", env={})).encode())
+    await w.drain()
+    while await r.readline():
+        pass
+    w.close()
+    await w.wait_closed()
+
+    runner = CliRunner()
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: runner.invoke(main, ["ps", "--json"], catch_exceptions=False),
+    )
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed["jobs"] == []  # default filter hides done
+
+    result_all = await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: runner.invoke(main, ["ps", "--all", "--json"], catch_exceptions=False),
+    )
+    parsed_all = json.loads(result_all.output)
+    assert len(parsed_all["jobs"]) == 1
 
 
 @pytest.mark.asyncio

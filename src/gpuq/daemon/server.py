@@ -301,7 +301,7 @@ class Server:
         log_path = paths.log_dir(req.id)
         if log_path.exists() and req.from_ in ("start", "tail"):
             jl = JobLogs(log_path)
-            history = jl.read_all() if req.from_ == "start" else jl.tail(n=200)
+            history = jl.read_all() if req.from_ == "start" else jl.tail(n=req.tail)
             for stream, line in history:
                 _send(writer, p.LogEvent(id=req.id, stream=stream, line=line))
             await writer.drain()

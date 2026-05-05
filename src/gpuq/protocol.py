@@ -37,6 +37,7 @@ class Attach:
     id: str
     follow: bool = True
     from_: str = "tail"
+    tail: int = 200
 
 
 @dataclass(frozen=True)

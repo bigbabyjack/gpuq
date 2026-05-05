@@ -1,7 +1,11 @@
 import asyncio
 
 import pytest
+from click.testing import CliRunner
 
+from gpuq import paths
+from gpuq import protocol as p
+from gpuq.cli import main
 from gpuq.logs import JobLogs
 
 
@@ -38,6 +42,32 @@ def test_read_all_preserves_stream_and_order(tmp_path):
         ("stderr", "b\n"),
         ("stdout", "c\n"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("daemon")
+async def test_logs_emits_placeholder_when_files_empty():
+    """A queued job has 0-byte logs → CLI prints placeholder on stderr."""
+    r, w = await asyncio.open_unix_connection(str(paths.socket_path()))
+    w.write(
+        p.encode_request(
+            p.Submit(cmd=["bash", "-c", "sleep 5"], cwd="/tmp", env={}, detach=True)
+        ).encode()
+    )
+    await w.drain()
+    queued_ev = p.decode_event((await r.readline()).decode())
+    w.close()
+    await w.wait_closed()
+    jid = queued_ev.id
+
+    # Block other queue access; before the job runs its logs are empty.
+    runner = CliRunner()
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: runner.invoke(main, ["logs", jid], catch_exceptions=False),
+    )
+    assert result.exit_code == 0
+    assert "no output yet" in result.output
 
 
 @pytest.mark.asyncio
