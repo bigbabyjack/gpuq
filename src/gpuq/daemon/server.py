@@ -109,7 +109,14 @@ class Server:
             job = self.queue.pop()
             if job is None:
                 continue
-            await self._run_job(job)
+            try:
+                await self._run_job(job)
+            except Exception:
+                log.exception("scheduler: _run_job crashed for %s", job.id)
+                with contextlib.suppress(Exception):
+                    self.store.jobs.update_state(
+                        job.id, state="failed", exit_code=-1, finished_at=_now()
+                    )
 
     async def _wait_lease_released(self) -> None:
         while self._lease_held.is_set() and not self._stopping.is_set():
@@ -130,60 +137,62 @@ class Server:
             async for stream, line in job_logs.follow():
                 self.bus.publish(
                     job.id,
-                    p.LogEvent(
-                        id=job.id,
-                        stream=stream,
-                        line=line,
-                    ),
+                    p.LogEvent(id=job.id, stream=stream, line=line),
                 )
 
         mirror_task = asyncio.create_task(mirror())
+        rc: int = -1
+        dur: float = 0.0
+        spawn_error: str | None = None
         try:
             self.store.jobs.update_state(job.id, state="running", started_at=_now())
             self.bus.publish(
                 job.id,
-                p.StateEvent(
-                    id=job.id,
-                    state="running",
-                    started_at=_now(),
-                ),
+                p.StateEvent(id=job.id, state="running", started_at=_now()),
             )
-            run_task = asyncio.create_task(
-                runner.run(cmd=job.cmd, cwd=job.cwd, env=job.env, logs=job_logs)
-            )
-            for _ in range(50):
-                if runner.pid is not None:
-                    self.store.jobs.update_state(job.id, state="running", pid=runner.pid)
-                    break
-                await asyncio.sleep(0.01)
-            rc, dur = await run_task
+            try:
+                run_task = asyncio.create_task(
+                    runner.run(cmd=job.cmd, cwd=job.cwd, env=job.env, logs=job_logs)
+                )
+                for _ in range(50):
+                    if runner.pid is not None:
+                        self.store.jobs.update_state(job.id, state="running", pid=runner.pid)
+                        break
+                    await asyncio.sleep(0.01)
+                rc, dur = await run_task
+            except Exception as e:
+                spawn_error = repr(e)
+                log.exception("job %s: runner crashed", job.id)
         finally:
             job_logs.eof()
-            await mirror_task
+            with contextlib.suppress(Exception):
+                await mirror_task
             job_logs.close()
             self._current_runner = None
             self._current_job_id = None
 
-        final_state = "done" if rc == 0 else "failed"
-        self.store.jobs.update_state(
-            job.id,
-            state=final_state,
-            exit_code=rc,
-            finished_at=_now(),
-        )
-        self.bus.publish(
-            job.id,
-            p.StateEvent(
-                id=job.id,
-                state=final_state,
-                exit_code=rc,
-                duration_s=dur,
-            ),
-        )
-        self.bus.close(job.id)
+            final_state = "done" if (rc == 0 and spawn_error is None) else "failed"
+            with contextlib.suppress(Exception):
+                self.store.jobs.update_state(
+                    job.id,
+                    state=final_state,
+                    exit_code=rc,
+                    finished_at=_now(),
+                )
+                self.bus.publish(
+                    job.id,
+                    p.StateEvent(
+                        id=job.id,
+                        state=final_state,
+                        exit_code=rc,
+                        duration_s=dur,
+                    ),
+                )
+                self.bus.close(job.id)
 
-        if self.store.jobs.next_queued() is None and not self._lease_held.is_set():
-            await self.ollama.restore()
+            if self.store.jobs.next_queued() is None and not self._lease_held.is_set():
+                with contextlib.suppress(Exception):
+                    await self.ollama.restore()
 
     # -- connection handler ---------------------------------------------------
 

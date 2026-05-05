@@ -74,7 +74,7 @@ async def test_retry_done_with_force(daemon):
     assert payload["ok"] is True
 
 
-async def test_retry_unknown_id(daemon):
+async def test_retry_unknown_id():
     events = await _send_recv(p.Retry(id="j_nope"))
     payload = next(e for e in events if isinstance(e, p.ResultEvent)).payload
     assert payload["ok"] is False

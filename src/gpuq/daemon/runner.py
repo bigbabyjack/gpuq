@@ -42,7 +42,19 @@ class Runner:
             pump(self._proc.stdout, "stdout"),
             pump(self._proc.stderr, "stderr"),
         )
-        rc = await self._proc.wait()
+        # Pipes have closed; the child should be dead or imminently dead. If
+        # asyncio's child watcher misses SIGCHLD (a known-ish hazard around
+        # forks/grandchildren that inherit the PID), `_proc.wait()` can hang
+        # forever. Bound it, then SIGKILL and bail.
+        try:
+            rc = await asyncio.wait_for(self._proc.wait(), timeout=10.0)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                self._proc.kill()
+            try:
+                rc = await asyncio.wait_for(self._proc.wait(), timeout=2.0)
+            except TimeoutError:
+                rc = -1
         return rc, time.monotonic() - t0
 
     @property

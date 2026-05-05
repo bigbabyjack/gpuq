@@ -181,6 +181,23 @@ async def test_bump_running_job_returns_false():
     assert payload["ok"] is False
 
 
+async def test_unknown_binary_marks_job_failed_and_keeps_scheduler_alive():
+    """A non-existent binary must not wedge the scheduler."""
+    events = await _send_recv(
+        p.Submit(cmd=["/no/such/binary"], cwd="/tmp", env={}),
+    )
+    states = [e for e in events if isinstance(e, p.StateEvent)]
+    final = states[-1]
+    assert final.state == "failed"
+
+    # Scheduler must still serve the next submit.
+    next_events = await _send_recv(
+        p.Submit(cmd=["bash", "-c", "echo ok"], cwd="/tmp", env={}),
+    )
+    next_states = [e.state for e in next_events if isinstance(e, p.StateEvent)]
+    assert "done" in next_states
+
+
 async def test_cancel_running_waits_for_terminal_state():
     """Cancel of a running job returns ok=True only after state has transitioned."""
     submit_reader, submit_writer = await asyncio.open_unix_connection(str(paths.socket_path()))
