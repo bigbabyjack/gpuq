@@ -1,6 +1,8 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
-from gpuq.daemon.queue import Queue
+from gpuq.daemon.queue import Queue, wedge_signature
 from gpuq.state import JobRecord, Store
 
 
@@ -66,3 +68,66 @@ def test_cancel_running_returns_false(store):
     q.enqueue(_job("j_a"))
     q.pop()  # j_a is now "starting"
     assert q.cancel("j_a") is False
+
+
+def _running_job(*, pid, started_at, **kw) -> JobRecord:
+    return JobRecord(
+        id=kw.get("id", "j_x"),
+        cmd=["x"],
+        cwd="/",
+        env={},
+        tag="",
+        priority=0,
+        state="running",
+        pid=pid,
+        exit_code=None,
+        submitted_at="2026-01-01T00:00:00+00:00",
+        started_at=started_at,
+        finished_at=None,
+    )
+
+
+def test_wedge_no_pid_no_logs_old_enough(tmp_path):
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=120)).isoformat()
+    job = _running_job(pid=None, started_at=started)
+    sig = wedge_signature(job, log_dir=tmp_path, now=now, alive=lambda _: False)
+    assert sig == "wedged-no-pid"
+
+
+def test_wedge_dead_pid(tmp_path):
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=120)).isoformat()
+    job = _running_job(pid=999999, started_at=started)
+    sig = wedge_signature(job, log_dir=tmp_path, now=now, alive=lambda _: False)
+    assert sig == "wedged-dead-pid"
+
+
+def test_not_wedged_when_pid_alive(tmp_path):
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=120)).isoformat()
+    job = _running_job(pid=1, started_at=started)
+    assert wedge_signature(job, log_dir=tmp_path, now=now, alive=lambda _: True) is None
+
+
+def test_not_wedged_when_logs_nonempty(tmp_path):
+    (tmp_path / "combined.log").write_text("hello\n")
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=120)).isoformat()
+    job = _running_job(pid=None, started_at=started)
+    assert wedge_signature(job, log_dir=tmp_path, now=now, alive=lambda _: False) is None
+
+
+def test_not_wedged_when_under_min_age(tmp_path):
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=10)).isoformat()
+    job = _running_job(pid=None, started_at=started)
+    assert wedge_signature(job, log_dir=tmp_path, now=now, alive=lambda _: False) is None
+
+
+def test_not_wedged_when_state_not_running(tmp_path):
+    now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    started = (now - timedelta(seconds=120)).isoformat()
+    job = _running_job(pid=None, started_at=started)
+    job_q = JobRecord(**{**job.__dict__, "state": "queued"})
+    assert wedge_signature(job_q, log_dir=tmp_path, now=now, alive=lambda _: False) is None

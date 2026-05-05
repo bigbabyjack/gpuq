@@ -181,6 +181,64 @@ async def test_bump_running_job_returns_false():
     assert payload["ok"] is False
 
 
+async def test_cancel_running_waits_for_terminal_state():
+    """Cancel of a running job returns ok=True only after state has transitioned."""
+    submit_reader, submit_writer = await asyncio.open_unix_connection(str(paths.socket_path()))
+    submit_writer.write(
+        p.encode_request(
+            p.Submit(cmd=["bash", "-c", "sleep 5"], cwd="/tmp", env={}, detach=True)
+        ).encode()
+    )
+    await submit_writer.drain()
+    queued = p.decode_event((await submit_reader.readline()).decode())
+    submit_writer.close()
+    await submit_writer.wait_closed()
+    jid = queued.id
+
+    # Wait for it to reach running
+    for _ in range(50):
+        events = await _send_recv(p.Show(id=jid))
+        job = next(e for e in events if isinstance(e, p.ResultEvent)).payload["job"]
+        if job["state"] == "running":
+            break
+        await asyncio.sleep(0.05)
+    assert job["state"] == "running"
+
+    cancel_events = await _send_recv(p.Cancel(id=jid, timeout=5.0))
+    payload = next(e for e in cancel_events if isinstance(e, p.ResultEvent)).payload
+    assert payload["ok"] is True
+    # State must already be terminal when cancel returns ok=True
+    show_events = await _send_recv(p.Show(id=jid))
+    job = next(e for e in show_events if isinstance(e, p.ResultEvent)).payload["job"]
+    assert job["state"] in ("failed", "cancelled", "done")
+
+
+async def test_cancel_running_escalates_to_sigkill_when_sigterm_ignored():
+    submit_reader, submit_writer = await asyncio.open_unix_connection(str(paths.socket_path()))
+    # Trap TERM so SIGTERM is ignored; only SIGKILL ends it.
+    cmd = ["bash", "-c", "trap '' TERM; sleep 30"]
+    submit_writer.write(
+        p.encode_request(p.Submit(cmd=cmd, cwd="/tmp", env={}, detach=True)).encode()
+    )
+    await submit_writer.drain()
+    queued = p.decode_event((await submit_reader.readline()).decode())
+    submit_writer.close()
+    await submit_writer.wait_closed()
+    jid = queued.id
+
+    for _ in range(50):
+        events = await _send_recv(p.Show(id=jid))
+        job = next(e for e in events if isinstance(e, p.ResultEvent)).payload["job"]
+        if job["state"] == "running":
+            break
+        await asyncio.sleep(0.05)
+    assert job["state"] == "running"
+
+    cancel_events = await _send_recv(p.Cancel(id=jid, timeout=0.5))
+    payload = next(e for e in cancel_events if isinstance(e, p.ResultEvent)).payload
+    assert payload["ok"] is True
+
+
 async def test_cancel_queued_job():
     """Submit a long-running blocker, queue a second job, cancel the second."""
     blocker_events: list[p.Event] = []

@@ -143,12 +143,15 @@ class Server:
                     started_at=_now(),
                 ),
             )
-            rc, dur = await runner.run(
-                cmd=job.cmd,
-                cwd=job.cwd,
-                env=job.env,
-                logs=job_logs,
+            run_task = asyncio.create_task(
+                runner.run(cmd=job.cmd, cwd=job.cwd, env=job.env, logs=job_logs)
             )
+            for _ in range(50):
+                if runner.pid is not None:
+                    self.store.jobs.update_state(job.id, state="running", pid=runner.pid)
+                    break
+                await asyncio.sleep(0.01)
+            rc, dur = await run_task
         finally:
             job_logs.eof()
             await mirror_task
@@ -320,7 +323,7 @@ class Server:
     async def _handle_cancel(self, req: p.Cancel, writer: asyncio.StreamWriter) -> None:
         rec = self.store.jobs.get(req.id)
         if rec is None:
-            _send(writer, p.ResultEvent(payload={"ok": False}))
+            _send(writer, p.ResultEvent(payload={"ok": False, "reason": "unknown"}))
             return
         if rec.state == "queued":
             self.queue.cancel(req.id)
@@ -329,19 +332,46 @@ class Server:
             _send(
                 writer,
                 p.ResultEvent(
-                    payload={
-                        "ok": True,
-                        "job": _job_dict(self.store.jobs.get(req.id)),
-                    }
+                    payload={"ok": True, "job": _job_dict(self.store.jobs.get(req.id))}
                 ),
             )
             return
         if rec.state in ("running", "starting") and self._current_job_id == req.id:
             assert self._current_runner is not None
+            timeout = max(req.timeout, 0.0)
             await self._current_runner.signal(req.signal)
-            _send(writer, p.ResultEvent(payload={"ok": True}))
+            transitioned = await self._wait_terminal(req.id, timeout)
+            if not transitioned and req.signal != "KILL":
+                await self._current_runner.signal("KILL")
+                transitioned = await self._wait_terminal(req.id, min(timeout, 5.0))
+            if transitioned:
+                _send(
+                    writer,
+                    p.ResultEvent(
+                        payload={"ok": True, "job": _job_dict(self.store.jobs.get(req.id))}
+                    ),
+                )
+            else:
+                _send(writer, p.ResultEvent(payload={"ok": False, "reason": "wedged"}))
             return
-        _send(writer, p.ResultEvent(payload={"ok": False}))
+        if rec.state in ("done", "failed", "cancelled"):
+            _send(writer, p.ResultEvent(payload={"ok": False, "reason": "already_terminal"}))
+            return
+        _send(writer, p.ResultEvent(payload={"ok": False, "reason": "not_current"}))
+
+    async def _wait_terminal(self, jid: str, timeout: float) -> bool:
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            rec = self.store.jobs.get(jid)
+            if rec and rec.state in ("done", "failed", "cancelled"):
+                return True
+            if self._current_job_id != jid:
+                rec = self.store.jobs.get(jid)
+                if rec and rec.state in ("done", "failed", "cancelled"):
+                    return True
+            await asyncio.sleep(0.05)
+        rec = self.store.jobs.get(jid)
+        return bool(rec and rec.state in ("done", "failed", "cancelled"))
 
     async def _handle_lease(self, req: p.Lease, writer: asyncio.StreamWriter) -> None:
         while self._current_job_id is not None or self._lease_held.is_set():

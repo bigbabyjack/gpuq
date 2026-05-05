@@ -23,6 +23,8 @@ class Submit:
     priority: int = 0
     detach: bool = False
     next_: bool = False
+    description: str = ""
+    parent_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class Attach:
 class Ps:
     tag: str | None = None
     state: str | None = None
+    states: list[str] = field(default_factory=list)
+    since: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,28 @@ class Show:
 class Cancel:
     id: str
     signal: str = "TERM"
+    timeout: float = 10.0
+
+
+@dataclass(frozen=True)
+class Doctor:
+    fix: bool = False
+    ids: list[str] = field(default_factory=list)
+    min_age_s: float = 60.0
+
+
+@dataclass(frozen=True)
+class Retry:
+    id: str
+    force: bool = False
+
+
+@dataclass(frozen=True)
+class Prune:
+    older_than_s: float = 0.0
+    states: list[str] = field(default_factory=list)
+    keep_tag: str = ""
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,7 +103,19 @@ class RestoreOllama:
 
 
 Request = (
-    Submit | Bump | Attach | Ps | Show | Cancel | Lease | Release | EvictOllama | RestoreOllama
+    Submit
+    | Bump
+    | Attach
+    | Ps
+    | Show
+    | Cancel
+    | Doctor
+    | Retry
+    | Prune
+    | Lease
+    | Release
+    | EvictOllama
+    | RestoreOllama
 )
 
 _REQ_BY_OP: dict[str, type] = {
@@ -87,6 +125,9 @@ _REQ_BY_OP: dict[str, type] = {
     "ps": Ps,
     "show": Show,
     "cancel": Cancel,
+    "doctor": Doctor,
+    "retry": Retry,
+    "prune": Prune,
     "lease": Lease,
     "release": Release,
     "evict_ollama": EvictOllama,
