@@ -6,12 +6,12 @@ import asyncio
 import contextlib
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta as _timedelta
 from typing import Any
 
 from gpuq import paths
 from gpuq import protocol as p
-from gpuq.daemon.queue import Queue
+from gpuq.daemon.queue import Queue, wedge_signature
 from gpuq.daemon.runner import Runner
 from gpuq.ids import new_job_id, new_lease_id
 from gpuq.logs import JobLogs
@@ -23,6 +23,10 @@ log = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _timedelta_seconds(s: float) -> _timedelta:
+    return _timedelta(seconds=s)
 
 
 class Bus:
@@ -219,6 +223,12 @@ class Server:
             await self._handle_show(req, writer)
         elif isinstance(req, p.Cancel):
             await self._handle_cancel(req, writer)
+        elif isinstance(req, p.Doctor):
+            await self._handle_doctor(req, writer)
+        elif isinstance(req, p.Retry):
+            await self._handle_retry(req, writer)
+        elif isinstance(req, p.Prune):
+            await self._handle_prune(req, writer)
         elif isinstance(req, p.Lease):
             await self._handle_lease(req, writer)
         elif isinstance(req, p.Release):
@@ -258,6 +268,8 @@ class Server:
             submitted_at=_now(),
             started_at=None,
             finished_at=None,
+            parent_id=req.parent_id or None,
+            description=req.description or None,
         )
         sub = self.bus.subscribe(jid)
         self.queue.enqueue(rec)
@@ -299,7 +311,12 @@ class Server:
             self.bus.unsubscribe(req.id, sub)
 
     async def _handle_ps(self, req: p.Ps, writer: asyncio.StreamWriter) -> None:
-        jobs = self.store.jobs.find(state=req.state, tag=req.tag)
+        jobs = self.store.jobs.find(
+            state=req.state,
+            states=req.states or None,
+            tag=req.tag,
+            since=req.since,
+        )
         _send(
             writer,
             p.ResultEvent(
@@ -373,6 +390,105 @@ class Server:
         rec = self.store.jobs.get(jid)
         return bool(rec and rec.state in ("done", "failed", "cancelled"))
 
+    async def _handle_doctor(self, req: p.Doctor, writer: asyncio.StreamWriter) -> None:
+        now = datetime.now(UTC)
+        candidates = self.store.jobs.find(state="running")
+        if req.ids:
+            ids = set(req.ids)
+            candidates = [j for j in candidates if j.id in ids]
+        wedged: list[dict[str, Any]] = []
+        for j in candidates:
+            sig = wedge_signature(
+                j,
+                log_dir=paths.log_dir(j.id),
+                now=now,
+                min_age_s=req.min_age_s,
+            )
+            if sig is None:
+                continue
+            entry = {
+                "id": j.id,
+                "signature": sig,
+                "pid": j.pid,
+                "started_at": j.started_at,
+            }
+            if req.fix:
+                # Don't reap the currently-running job — it's not actually wedged
+                # if the daemon thinks it owns it.
+                if self._current_job_id == j.id:
+                    entry["fixed"] = False
+                    entry["reason"] = "current_job"
+                else:
+                    self.store.jobs.update_state(
+                        j.id,
+                        state="failed",
+                        exit_code=-1,
+                        finished_at=_now(),
+                    )
+                    entry["fixed"] = True
+            wedged.append(entry)
+        _send(writer, p.ResultEvent(payload={"wedged": wedged, "fix": req.fix}))
+
+    async def _handle_retry(self, req: p.Retry, writer: asyncio.StreamWriter) -> None:
+        rec = self.store.jobs.get(req.id)
+        if rec is None:
+            _send(writer, p.ResultEvent(payload={"ok": False, "reason": "unknown"}))
+            return
+        allowed = {"failed", "cancelled"} if not req.force else {"failed", "cancelled", "done"}
+        if rec.state not in allowed:
+            _send(
+                writer,
+                p.ResultEvent(payload={"ok": False, "reason": f"state={rec.state}"}),
+            )
+            return
+        new_id = new_job_id()
+        new_rec = JobRecord(
+            id=new_id,
+            cmd=rec.cmd,
+            cwd=rec.cwd,
+            env=rec.env,
+            tag=rec.tag,
+            priority=rec.priority,
+            state="queued",
+            pid=None,
+            exit_code=None,
+            submitted_at=_now(),
+            started_at=None,
+            finished_at=None,
+            parent_id=rec.id,
+            description=rec.description,
+        )
+        self.queue.enqueue(new_rec)
+        _send(
+            writer,
+            p.ResultEvent(payload={"ok": True, "job": _job_dict(self.store.jobs.get(new_id))}),
+        )
+
+    async def _handle_prune(self, req: p.Prune, writer: asyncio.StreamWriter) -> None:
+        import shutil
+
+        states = req.states or ["done", "failed", "cancelled"]
+        states = [s for s in states if s not in ("queued", "running", "starting")]
+        cutoff = (datetime.now(UTC) - _timedelta_seconds(req.older_than_s)).isoformat()
+        candidates = self.store.jobs.find(states=states)
+        deleted: list[str] = []
+        for j in candidates:
+            if req.keep_tag and j.tag == req.keep_tag:
+                continue
+            stamp = j.finished_at or j.submitted_at
+            if stamp >= cutoff:
+                continue
+            deleted.append(j.id)
+            if not req.dry_run:
+                self.store.jobs.delete(j.id)
+                log_dir = paths.log_dir(j.id)
+                if log_dir.exists():
+                    shutil.rmtree(log_dir, ignore_errors=True)
+        _send(
+            writer,
+            p.ResultEvent(payload={"deleted": deleted, "dry_run": req.dry_run}),
+        )
+
     async def _handle_lease(self, req: p.Lease, writer: asyncio.StreamWriter) -> None:
         while self._current_job_id is not None or self._lease_held.is_set():
             await asyncio.sleep(0.02)
@@ -427,6 +543,8 @@ def _job_dict(j: JobRecord | None) -> dict[str, Any] | None:
         "submitted_at": j.submitted_at,
         "started_at": j.started_at,
         "finished_at": j.finished_at,
+        "parent_id": j.parent_id,
+        "description": j.description,
     }
 
 

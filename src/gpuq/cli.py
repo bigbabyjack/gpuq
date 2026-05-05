@@ -223,6 +223,42 @@ def bump(id: str) -> None:
 
 
 @main.command()
+@click.option("--fix", is_flag=True, help="Transition wedged jobs to failed.")
+@click.option("--id", "id_", default=None, help="Restrict to a single job id.")
+@click.option("--min-age", "min_age", default=60.0, type=float, help="Min age in seconds.")
+@click.option("--json", "as_json", is_flag=True)
+def doctor(fix: bool, id_: str | None, min_age: float, as_json: bool) -> None:
+    """Detect (and optionally clear) wedged jobs."""
+
+    async def run():
+        ids = [id_] if id_ else []
+        reader, writer = await _send(p.Doctor(fix=fix, ids=ids, min_age_s=min_age))
+        ev = await _recv_one(reader)
+        writer.close()
+        payload = ev.payload if isinstance(ev, p.ResultEvent) else {"wedged": []}
+        if as_json:
+            click.echo(json.dumps(payload))
+            return
+        wedged = payload.get("wedged", [])
+        if not wedged:
+            click.echo("[gpuq] no wedged jobs", err=True)
+            return
+        for w in wedged:
+            click.echo(
+                f"{w['id']}  running  pid={w['pid']}  started {w['started_at']}\n"
+                f"  signature: {w['signature']}"
+                + ("  fixed" if w.get("fixed") else "")
+            )
+        if not fix:
+            click.echo(
+                f"\n{len(wedged)} job(s) wedged. Re-run with --fix to transition to failed.",
+                err=True,
+            )
+
+    _run(run())
+
+
+@main.command()
 def daemon() -> None:
     """Run the daemon in the foreground (used by systemd)."""
     from gpuq.daemon.main import main as daemon_main
