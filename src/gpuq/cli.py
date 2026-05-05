@@ -46,10 +46,13 @@ def main() -> None:
 @main.command()
 @click.option("-t", "--tag", default="")
 @click.option("-p", "--priority", type=int, default=0)
+@click.option("--next", "next_", is_flag=True, help="Jump ahead of all queued jobs.")
 @click.option("--detach", is_flag=True)
 @click.argument("cmd", nargs=-1, required=True)
-def submit(tag: str, priority: int, detach: bool, cmd: tuple[str, ...]) -> None:
+def submit(tag: str, priority: int, next_: bool, detach: bool, cmd: tuple[str, ...]) -> None:
     """Submit a command to the queue. Streams output and exits with its code."""
+    if next_ and priority != 0:
+        raise click.UsageError("--next and --priority are mutually exclusive")
 
     async def run():
         req = p.Submit(
@@ -59,6 +62,7 @@ def submit(tag: str, priority: int, detach: bool, cmd: tuple[str, ...]) -> None:
             tag=tag,
             priority=priority,
             detach=detach,
+            next_=next_,
         )
         reader, writer = await _send(req)
         exit_code = 0
@@ -196,6 +200,24 @@ def ollama_restore() -> None:
         reader, writer = await _send(p.RestoreOllama())
         await _recv_one(reader)
         writer.close()
+
+    _run(run())
+
+
+@main.command()
+@click.argument("id")
+def bump(id: str) -> None:
+    """Move a queued job to the front of the queue."""
+
+    async def run():
+        reader, writer = await _send(p.Bump(id=id))
+        ev = await _recv_one(reader)
+        writer.close()
+        if isinstance(ev, p.ResultEvent) and ev.payload.get("ok"):
+            click.echo(f"[gpuq] bumped {id}", err=True)
+        else:
+            click.echo(f"[gpuq] could not bump {id} (not queued?)", err=True)
+            sys.exit(1)
 
     _run(run())
 

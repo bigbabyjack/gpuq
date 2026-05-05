@@ -27,10 +27,12 @@ alongside per-job logs in `logs/<id>/`.
 ```bash
 gpuq submit -- python train.py        # blocks until done, propagates exit code
 gpuq submit -t train -p 5 -- ./run.sh # tagged + higher priority
+gpuq submit --next -- ./urgent.sh     # jump ahead of all queued jobs
 gpuq ps                                # list jobs
 gpuq ps --json                         # parseable
 gpuq show j_abc123 --json              # one job
 gpuq logs j_abc123 -f                  # tail logs
+gpuq bump j_abc123                     # move queued job to the front
 gpuq cancel j_abc123                   # SIGTERM (--kill for SIGKILL)
 gpuq ollama evict                      # force ollama out
 gpuq ollama restore                    # no-op (ollama lazy-loads)
