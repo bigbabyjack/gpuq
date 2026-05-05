@@ -22,6 +22,12 @@ class Submit:
     tag: str = ""
     priority: int = 0
     detach: bool = False
+    next_: bool = False
+
+
+@dataclass(frozen=True)
+class Bump:
+    id: str
 
 
 @dataclass(frozen=True)
@@ -70,10 +76,13 @@ class RestoreOllama:
     pass
 
 
-Request = Submit | Attach | Ps | Show | Cancel | Lease | Release | EvictOllama | RestoreOllama
+Request = (
+    Submit | Bump | Attach | Ps | Show | Cancel | Lease | Release | EvictOllama | RestoreOllama
+)
 
 _REQ_BY_OP: dict[str, type] = {
     "submit": Submit,
+    "bump": Bump,
     "attach": Attach,
     "ps": Ps,
     "show": Show,
@@ -105,6 +114,8 @@ def decode_request(line: str) -> Request:
     kwargs = {k: v for k, v in obj.items() if k != "op"}
     if "from" in kwargs:
         kwargs["from_"] = kwargs.pop("from")
+    if "next" in kwargs:
+        kwargs["next_"] = kwargs.pop("next")
     return _load(cls, kwargs)
 
 
@@ -181,7 +192,8 @@ def decode_event(line: str) -> Event:
 
 def _dump(d: Any) -> dict[str, Any]:
     out = asdict(d) if is_dataclass(d) else dict(d)
-    return {("from" if k == "from_" else k): v for k, v in out.items()}
+    rename = {"from_": "from", "next_": "next"}
+    return {rename.get(k, k): v for k, v in out.items()}
 
 
 def _load(cls: type, kwargs: dict[str, Any]) -> Any:
