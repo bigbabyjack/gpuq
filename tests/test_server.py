@@ -88,6 +88,99 @@ async def test_show_returns_job():
     assert payload["job"]["id"] == jid
 
 
+async def test_submit_next_jumps_ahead_of_queued():
+    """A blocker runs; we queue A normally, then B with --next; B should run before A."""
+    blocker_events: list[p.Event] = []
+
+    async def blocker():
+        blocker_events.extend(
+            await _send_recv(p.Submit(cmd=["bash", "-c", "sleep 0.4"], cwd="/tmp", env={}))
+        )
+
+    blocker_task = asyncio.create_task(blocker())
+    await asyncio.sleep(0.05)
+
+    a_events = await _send_recv(
+        p.Submit(cmd=["bash", "-c", "echo A"], cwd="/tmp", env={}, detach=True),
+    )
+    b_events = await _send_recv(
+        p.Submit(cmd=["bash", "-c", "echo B"], cwd="/tmp", env={}, detach=True, next_=True),
+    )
+    a_id = next(e.id for e in a_events if isinstance(e, p.StateEvent))
+    b_id = next(e.id for e in b_events if isinstance(e, p.StateEvent))
+
+    await blocker_task
+
+    # Wait for both to finish
+    for _ in range(50):
+        ps = await _send_recv(p.Ps())
+        jobs = next(e for e in ps if isinstance(e, p.ResultEvent)).payload["jobs"]
+        states = {j["id"]: j for j in jobs}
+        if states[a_id]["state"] == "done" and states[b_id]["state"] == "done":
+            break
+        await asyncio.sleep(0.05)
+
+    a_show = await _send_recv(p.Show(id=a_id))
+    b_show = await _send_recv(p.Show(id=b_id))
+    a_job = next(e for e in a_show if isinstance(e, p.ResultEvent)).payload["job"]
+    b_job = next(e for e in b_show if isinstance(e, p.ResultEvent)).payload["job"]
+    assert b_job["started_at"] < a_job["started_at"]
+    assert b_job["priority"] > a_job["priority"]
+
+
+async def test_bump_queued_job_to_front():
+    blocker_events: list[p.Event] = []
+
+    async def blocker():
+        blocker_events.extend(
+            await _send_recv(p.Submit(cmd=["bash", "-c", "sleep 0.4"], cwd="/tmp", env={}))
+        )
+
+    blocker_task = asyncio.create_task(blocker())
+    await asyncio.sleep(0.05)
+
+    a_events = await _send_recv(
+        p.Submit(cmd=["bash", "-c", "echo A"], cwd="/tmp", env={}, detach=True),
+    )
+    b_events = await _send_recv(
+        p.Submit(cmd=["bash", "-c", "echo B"], cwd="/tmp", env={}, detach=True),
+    )
+    a_id = next(e.id for e in a_events if isinstance(e, p.StateEvent))
+    b_id = next(e.id for e in b_events if isinstance(e, p.StateEvent))
+
+    bump_events = await _send_recv(p.Bump(id=b_id))
+    payload = next(e for e in bump_events if isinstance(e, p.ResultEvent)).payload
+    assert payload["ok"] is True
+    assert payload["job"]["priority"] > 0
+
+    await blocker_task
+
+    for _ in range(50):
+        ps = await _send_recv(p.Ps())
+        jobs = next(e for e in ps if isinstance(e, p.ResultEvent)).payload["jobs"]
+        states = {j["id"]: j for j in jobs}
+        if states[a_id]["state"] == "done" and states[b_id]["state"] == "done":
+            break
+        await asyncio.sleep(0.05)
+
+    a_job = next(
+        e for e in (await _send_recv(p.Show(id=a_id))) if isinstance(e, p.ResultEvent)
+    ).payload["job"]
+    b_job = next(
+        e for e in (await _send_recv(p.Show(id=b_id))) if isinstance(e, p.ResultEvent)
+    ).payload["job"]
+    assert b_job["started_at"] < a_job["started_at"]
+
+
+async def test_bump_running_job_returns_false():
+    submit_events = await _send_recv(p.Submit(cmd=["true"], cwd="/tmp", env={}))
+    jid = next(e.id for e in submit_events if isinstance(e, p.StateEvent))
+    # Wait for it to finish; bumping a done job should also fail.
+    bump_events = await _send_recv(p.Bump(id=jid))
+    payload = next(e for e in bump_events if isinstance(e, p.ResultEvent)).payload
+    assert payload["ok"] is False
+
+
 async def test_cancel_queued_job():
     """Submit a long-running blocker, queue a second job, cancel the second."""
     blocker_events: list[p.Event] = []

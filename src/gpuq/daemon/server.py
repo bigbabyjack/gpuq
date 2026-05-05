@@ -206,6 +206,8 @@ class Server:
     async def _dispatch(self, req: p.Request, writer: asyncio.StreamWriter) -> None:
         if isinstance(req, p.Submit):
             await self._handle_submit(req, writer)
+        elif isinstance(req, p.Bump):
+            await self._handle_bump(req, writer)
         elif isinstance(req, p.Attach):
             await self._handle_attach(req, writer)
         elif isinstance(req, p.Ps):
@@ -235,13 +237,18 @@ class Server:
 
     async def _handle_submit(self, req: p.Submit, writer: asyncio.StreamWriter) -> None:
         jid = new_job_id()
+        if req.next_:
+            top = self.store.jobs.max_queued_priority()
+            priority = (top + 1) if top is not None else 1
+        else:
+            priority = req.priority
         rec = JobRecord(
             id=jid,
             cmd=req.cmd,
             cwd=req.cwd,
             env=req.env,
             tag=req.tag,
-            priority=req.priority,
+            priority=priority,
             state="queued",
             pid=None,
             exit_code=None,
@@ -302,6 +309,13 @@ class Server:
     async def _handle_show(self, req: p.Show, writer: asyncio.StreamWriter) -> None:
         rec = self.store.jobs.get(req.id)
         _send(writer, p.ResultEvent(payload={"job": _job_dict(rec)}))
+
+    async def _handle_bump(self, req: p.Bump, writer: asyncio.StreamWriter) -> None:
+        ok = self.store.jobs.bump(req.id)
+        payload: dict[str, Any] = {"ok": ok}
+        if ok:
+            payload["job"] = _job_dict(self.store.jobs.get(req.id))
+        _send(writer, p.ResultEvent(payload=payload))
 
     async def _handle_cancel(self, req: p.Cancel, writer: asyncio.StreamWriter) -> None:
         rec = self.store.jobs.get(req.id)
