@@ -65,7 +65,7 @@ async def test_doctor_detects_wedged_job(daemon):
     assert sig == "wedged-no-pid"
 
 
-async def test_doctor_no_op_when_healthy(daemon):
+async def test_doctor_no_op_when_healthy():
     events = await _send_recv(p.Doctor())
     payload = next(e for e in events if isinstance(e, p.ResultEvent)).payload
     assert payload["wedged"] == []

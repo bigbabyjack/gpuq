@@ -188,6 +188,7 @@ def test_migration_idempotent_on_existing_db(tmp_path):
     s1.close()
     s2 = Store(db)
     s2.init()
+    assert s2._conn is not None
     cols = {row["name"] for row in s2._conn.execute("PRAGMA table_info(jobs)")}
     assert "parent_id" in cols and "description" in cols
     s2.close()

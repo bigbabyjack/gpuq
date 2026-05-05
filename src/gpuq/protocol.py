@@ -173,6 +173,8 @@ class StateEvent:
     started_at: str | None = None
     exit_code: int | None = None
     duration_s: float | None = None
+    eta_running_s: float | None = None
+    eta_start_s: float | None = None
 
 
 @dataclass(frozen=True)

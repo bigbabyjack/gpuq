@@ -132,6 +132,9 @@ class JobRepo:
         cur = self._c.execute("DELETE FROM jobs WHERE id=?", (jid,))
         return cur.rowcount > 0
 
+    def raw_query(self, sql: str, args: list) -> list[sqlite3.Row]:
+        return list(self._c.execute(sql, args))
+
     def get(self, jid: str) -> JobRecord | None:
         r = self._c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return _row_to_job(r) if r else None

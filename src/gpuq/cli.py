@@ -31,6 +31,14 @@ def _parse_duration(s: str) -> float:
     return float(s)
 
 
+def _fmt_dur(s: float) -> str:
+    if s < 60:
+        return f"{int(s)}s"
+    if s < 3600:
+        return f"{int(s / 60)}m"
+    return f"{s / 3600:.1f}h"
+
+
 def _since_to_iso(s: str) -> str:
     from datetime import UTC, datetime, timedelta
 
@@ -68,8 +76,16 @@ def main() -> None:
 @click.option("-p", "--priority", type=int, default=0)
 @click.option("--next", "next_", is_flag=True, help="Jump ahead of all queued jobs.")
 @click.option("--detach", is_flag=True)
+@click.option("--describe", default="", help="Long-form description for history queries.")
 @click.argument("cmd", nargs=-1, required=True)
-def submit(tag: str, priority: int, next_: bool, detach: bool, cmd: tuple[str, ...]) -> None:
+def submit(
+    tag: str,
+    priority: int,
+    next_: bool,
+    detach: bool,
+    describe: str,
+    cmd: tuple[str, ...],
+) -> None:
     """Submit a command to the queue. Streams output and exits with its code."""
     if next_ and priority != 0:
         raise click.UsageError("--next and --priority are mutually exclusive")
@@ -83,6 +99,7 @@ def submit(tag: str, priority: int, next_: bool, detach: bool, cmd: tuple[str, .
             priority=priority,
             detach=detach,
             next_=next_,
+            description=describe,
         )
         reader, writer = await _send(req)
         exit_code = 0
@@ -96,6 +113,10 @@ def submit(tag: str, priority: int, next_: bool, detach: bool, cmd: tuple[str, .
                     parts = [f"[gpuq] {ev.state} {ev.id}"]
                     if ev.position is not None:
                         parts.append(f"pos={ev.position}")
+                    if ev.eta_running_s is not None:
+                        parts.append(f"eta_running={_fmt_dur(ev.eta_running_s)}")
+                    if ev.eta_start_s is not None:
+                        parts.append(f"eta_start={_fmt_dur(ev.eta_start_s)}")
                     if ev.exit_code is not None:
                         parts.append(f"exit={ev.exit_code}")
                     click.echo(" ".join(parts), err=True)
@@ -148,9 +169,7 @@ def ps(
         elif not all_:
             states = ["queued", "starting", "running"]
         since_iso = _since_to_iso(since) if since else None
-        reader, writer = await _send(
-            p.Ps(tag=tag, state=state, states=states, since=since_iso)
-        )
+        reader, writer = await _send(p.Ps(tag=tag, state=state, states=states, since=since_iso))
         ev = await _recv_one(reader)
         writer.close()
         payload = ev.payload if isinstance(ev, p.ResultEvent) else {"jobs": []}
@@ -293,6 +312,62 @@ def bump(id: str) -> None:
 
 
 @main.command()
+@click.argument("id")
+@click.option("--force", is_flag=True, help="Allow retry of done jobs.")
+def retry(id: str, force: bool) -> None:
+    """Resubmit a failed/cancelled job."""
+
+    async def run():
+        reader, writer = await _send(p.Retry(id=id, force=force))
+        ev = await _recv_one(reader)
+        writer.close()
+        payload: dict = ev.payload if isinstance(ev, p.ResultEvent) else {"ok": False}
+        if not payload.get("ok"):
+            click.echo(
+                f"[gpuq] could not retry {id}: {payload.get('reason', 'unknown')}",
+                err=True,
+            )
+            sys.exit(1)
+        job = payload.get("job") or {}
+        click.echo(job.get("id", ""))
+
+    _run(run())
+
+
+@main.command()
+@click.option("--older-than", "older_than", default="7d", help="Age cutoff (e.g. 1d, 6h).")
+@click.option("--state", "states_csv", default=None, help="Comma-separated states to prune.")
+@click.option("--keep-tag", default="", help="Skip jobs with this tag.")
+@click.option("--dry-run", is_flag=True)
+def prune(older_than: str, states_csv: str | None, keep_tag: str, dry_run: bool) -> None:
+    """Delete done/failed/cancelled jobs older than the cutoff."""
+
+    async def run():
+        states = []
+        if states_csv:
+            states = [s.strip() for s in states_csv.split(",") if s.strip()]
+        secs = _parse_duration(older_than)
+        reader, writer = await _send(
+            p.Prune(
+                older_than_s=secs,
+                states=states,
+                keep_tag=keep_tag,
+                dry_run=dry_run,
+            )
+        )
+        ev = await _recv_one(reader)
+        writer.close()
+        payload = ev.payload if isinstance(ev, p.ResultEvent) else {"deleted": []}
+        ids = payload.get("deleted", [])
+        verb = "would delete" if payload.get("dry_run") else "deleted"
+        click.echo(f"[gpuq] {verb} {len(ids)} job(s)", err=True)
+        for jid in ids:
+            click.echo(jid)
+
+    _run(run())
+
+
+@main.command()
 @click.option("--fix", is_flag=True, help="Transition wedged jobs to failed.")
 @click.option("--id", "id_", default=None, help="Restrict to a single job id.")
 @click.option("--min-age", "min_age", default=60.0, type=float, help="Min age in seconds.")
@@ -316,8 +391,7 @@ def doctor(fix: bool, id_: str | None, min_age: float, as_json: bool) -> None:
         for w in wedged:
             click.echo(
                 f"{w['id']}  running  pid={w['pid']}  started {w['started_at']}\n"
-                f"  signature: {w['signature']}"
-                + ("  fixed" if w.get("fixed") else "")
+                f"  signature: {w['signature']}" + ("  fixed" if w.get("fixed") else "")
             )
         if not fix:
             click.echo(

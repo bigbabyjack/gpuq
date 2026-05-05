@@ -128,6 +128,19 @@ def test_not_wedged_when_under_min_age(tmp_path):
 def test_not_wedged_when_state_not_running(tmp_path):
     now = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
     started = (now - timedelta(seconds=120)).isoformat()
-    job = _running_job(pid=None, started_at=started)
-    job_q = JobRecord(**{**job.__dict__, "state": "queued"})
+    job_q = _running_job(pid=None, started_at=started, id="j_q")
+    job_q = JobRecord(
+        id=job_q.id,
+        cmd=job_q.cmd,
+        cwd=job_q.cwd,
+        env=job_q.env,
+        tag=job_q.tag,
+        priority=job_q.priority,
+        state="queued",
+        pid=job_q.pid,
+        exit_code=job_q.exit_code,
+        submitted_at=job_q.submitted_at,
+        started_at=job_q.started_at,
+        finished_at=job_q.finished_at,
+    )
     assert wedge_signature(job_q, log_dir=tmp_path, now=now, alive=lambda _: False) is None

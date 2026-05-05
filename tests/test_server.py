@@ -193,6 +193,7 @@ async def test_cancel_running_waits_for_terminal_state():
     queued = p.decode_event((await submit_reader.readline()).decode())
     submit_writer.close()
     await submit_writer.wait_closed()
+    assert isinstance(queued, p.StateEvent)
     jid = queued.id
 
     # Wait for it to reach running
@@ -224,6 +225,7 @@ async def test_cancel_running_escalates_to_sigkill_when_sigterm_ignored():
     queued = p.decode_event((await submit_reader.readline()).decode())
     submit_writer.close()
     await submit_writer.wait_closed()
+    assert isinstance(queued, p.StateEvent)
     jid = queued.id
 
     for _ in range(50):

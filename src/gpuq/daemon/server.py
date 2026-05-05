@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta as _timedelta
+from datetime import UTC, datetime
+from datetime import timedelta as _timedelta
 from typing import Any
 
 from gpuq import paths
 from gpuq import protocol as p
-from gpuq.daemon.queue import Queue, wedge_signature
+from gpuq.daemon.queue import Queue, recent_mean_runtime, wedge_signature
 from gpuq.daemon.runner import Runner
 from gpuq.ids import new_job_id, new_lease_id
 from gpuq.logs import JobLogs
@@ -274,7 +275,17 @@ class Server:
         sub = self.bus.subscribe(jid)
         self.queue.enqueue(rec)
         pos = self.queue.position(jid)
-        _send(writer, p.StateEvent(id=jid, state="queued", position=pos))
+        eta_running, eta_start = self._compute_eta(rec, pos)
+        _send(
+            writer,
+            p.StateEvent(
+                id=jid,
+                state="queued",
+                position=pos,
+                eta_running_s=eta_running,
+                eta_start_s=eta_start,
+            ),
+        )
         await writer.drain()
         if req.detach:
             self.bus.unsubscribe(jid, sub)
@@ -348,9 +359,7 @@ class Server:
             self.bus.close(req.id)
             _send(
                 writer,
-                p.ResultEvent(
-                    payload={"ok": True, "job": _job_dict(self.store.jobs.get(req.id))}
-                ),
+                p.ResultEvent(payload={"ok": True, "job": _job_dict(self.store.jobs.get(req.id))}),
             )
             return
         if rec.state in ("running", "starting") and self._current_job_id == req.id:
@@ -375,6 +384,28 @@ class Server:
             _send(writer, p.ResultEvent(payload={"ok": False, "reason": "already_terminal"}))
             return
         _send(writer, p.ResultEvent(payload={"ok": False, "reason": "not_current"}))
+
+    def _compute_eta(self, rec: JobRecord, pos: int | None) -> tuple[float | None, float | None]:
+        mean = recent_mean_runtime(self.store, tag=rec.tag)
+        if mean is None:
+            mean = recent_mean_runtime(self.store, tag="")
+        if mean is None:
+            return None, None
+        running_remaining = 0.0
+        if self._current_job_id is not None:
+            cur = self.store.jobs.get(self._current_job_id)
+            if cur and cur.started_at:
+                try:
+                    age = (
+                        datetime.now(UTC) - datetime.fromisoformat(cur.started_at)
+                    ).total_seconds()
+                except ValueError:
+                    age = 0.0
+                running_remaining = max(mean - age, 0.0)
+        eta_running = running_remaining
+        ahead = max((pos or 1) - 1, 0)
+        eta_start = running_remaining + ahead * mean
+        return eta_running, eta_start
 
     async def _wait_terminal(self, jid: str, timeout: float) -> bool:
         deadline = asyncio.get_event_loop().time() + timeout

@@ -58,6 +58,7 @@ async def test_logs_emits_placeholder_when_files_empty():
     queued_ev = p.decode_event((await r.readline()).decode())
     w.close()
     await w.wait_closed()
+    assert isinstance(queued_ev, p.StateEvent)
     jid = queued_ev.id
 
     # Block other queue access; before the job runs its logs are empty.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,13 +26,41 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def recent_mean_runtime(store: Store, *, tag: str = "", limit: int = 10) -> float | None:
+    """Mean runtime in seconds of the last `limit` done jobs (optionally tag-filtered).
+
+    Returns None if fewer than 3 samples are available.
+    """
+    sql = (
+        "SELECT started_at, finished_at FROM jobs "
+        "WHERE state='done' AND started_at IS NOT NULL AND finished_at IS NOT NULL"
+    )
+    args: list = []
+    if tag:
+        sql += " AND tag=?"
+        args.append(tag)
+    sql += " ORDER BY finished_at DESC LIMIT ?"
+    args.append(limit)
+    durations: list[float] = []
+    for row in store.jobs.raw_query(sql, args):
+        try:
+            s = datetime.fromisoformat(row["started_at"])
+            f = datetime.fromisoformat(row["finished_at"])
+        except ValueError:
+            continue
+        durations.append((f - s).total_seconds())
+    if len(durations) < 3:
+        return None
+    return sum(durations) / len(durations)
+
+
 def wedge_signature(
     job: JobRecord,
     *,
     log_dir: Path,
     now: datetime,
     min_age_s: float = 60.0,
-    alive: callable = pid_alive,
+    alive: Callable[[int], bool] = pid_alive,
 ) -> str | None:
     """Classify a running job as wedged. Returns a short signature string or None.
 
