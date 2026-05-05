@@ -157,6 +157,24 @@ class JobRepo:
         args.append(jid)
         self._c.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id=?", args)
 
+    def max_queued_priority(self, *, exclude: str | None = None) -> int | None:
+        sql = "SELECT MAX(priority) AS m FROM jobs WHERE state='queued'"
+        args: list = []
+        if exclude is not None:
+            sql += " AND id != ?"
+            args.append(exclude)
+        r = self._c.execute(sql, args).fetchone()
+        return r["m"] if r and r["m"] is not None else None
+
+    def bump(self, jid: str) -> bool:
+        rec = self.get(jid)
+        if rec is None or rec.state != "queued":
+            return False
+        top = self.max_queued_priority(exclude=jid)
+        new_prio = (top + 1) if top is not None else 1
+        self._c.execute("UPDATE jobs SET priority=? WHERE id=?", (new_prio, jid))
+        return True
+
     def next_queued(self) -> JobRecord | None:
         r = self._c.execute(
             "SELECT * FROM jobs WHERE state='queued' "

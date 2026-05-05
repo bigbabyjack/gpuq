@@ -106,6 +106,41 @@ def test_env_and_cmd_roundtrip(store):
     assert got.cmd == ["python", "-c", "print(1)"]
 
 
+def test_max_queued_priority_none_when_empty(store):
+    assert store.jobs.max_queued_priority() is None
+
+
+def test_max_queued_priority_ignores_non_queued(store):
+    store.jobs.insert(_job("j_a", prio=3, state="queued"))
+    store.jobs.insert(_job("j_b", prio=10, state="running"))
+    store.jobs.insert(_job("j_c", prio=99, state="done"))
+    assert store.jobs.max_queued_priority() == 3
+
+
+def test_bump_sets_priority_above_queued_max(store):
+    store.jobs.insert(_job("j_a", prio=0, t=0))
+    store.jobs.insert(_job("j_b", prio=5, t=1))
+    store.jobs.insert(_job("j_c", prio=2, t=2))
+    assert store.jobs.bump("j_c") is True
+    assert store.jobs.get("j_c").priority == 6
+
+
+def test_bump_only_queued_job_sets_priority_to_one(store):
+    store.jobs.insert(_job("j_a", prio=0, t=0))
+    assert store.jobs.bump("j_a") is True
+    # max_queued_priority excluding self is None → priority becomes 1
+    assert store.jobs.get("j_a").priority == 1
+
+
+def test_bump_refuses_non_queued(store):
+    store.jobs.insert(_job("j_a", state="running"))
+    assert store.jobs.bump("j_a") is False
+
+
+def test_bump_missing_returns_false(store):
+    assert store.jobs.bump("j_nope") is False
+
+
 def test_running_lists_starting_and_running(store):
     store.jobs.insert(_job("j_q", state="queued"))
     store.jobs.insert(_job("j_s", state="starting"))
